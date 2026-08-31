@@ -8,7 +8,15 @@ from sqlalchemy.orm import Session
 from app.models.booking import Booking, BookingPayment, BookingRental, BookingSlot
 from app.models.transaction import Transaction
 from app.models.user import Player
-from app.models.venue import Court, CourtAvailableSlot, RentalItem, Venue, VenuePaymentMethod
+from app.models.venue import (
+    Court,
+    CourtAvailableSlot,
+    RentalItem,
+    Venue,
+    VenueAvailableSlot,
+    VenueBookingSettings,
+    VenuePaymentMethod,
+)
 from app.schemas.booking import (
     BookingActionResponse,
     BookingCreateRequest,
@@ -273,6 +281,49 @@ def approve_booking_payment(
     )
 
 
+def reject_booking_payment(
+    db: Session,
+    current_user: CurrentUser,
+    booking_public_id: str,
+) -> BookingActionResponse:
+    booking = db.scalar(
+        select(Booking)
+        .join(Venue, Venue.id == Booking.venue_id)
+        .where(Booking.public_id == booking_public_id, Venue.owner_id == current_user.id)
+    )
+    if booking is None:
+        raise BookingFailure("Booking not found for this owner.", 404)
+    if booking.status != "pending":
+        raise BookingFailure("Only pending bookings can be rejected.", 400)
+
+    payment = db.scalar(select(BookingPayment).where(BookingPayment.booking_id == booking.id))
+    if payment is None:
+        raise BookingFailure("No payment record found for this booking.", 404)
+
+    now = datetime.utcnow()
+    payment.review_status = "rejected"
+    payment.payment_status = "unpaid"
+    payment.rejected_at = now
+
+    booking.status = "cancelled"
+    booking.payment_status = "unpaid"
+    booking.updated_at = now
+
+    transaction = db.scalar(select(Transaction).where(Transaction.booking_id == booking.id))
+    if transaction is not None:
+        transaction.status = "cancelled"
+        transaction.payment_status = "unpaid"
+
+    db.commit()
+
+    return BookingActionResponse(
+        public_id=booking.public_id,
+        status=booking.status,
+        payment_status=booking.payment_status,
+        payment_review_status=payment.review_status,
+    )
+
+
 def complete_owner_booking(
     db: Session,
     current_user: CurrentUser,
@@ -304,6 +355,98 @@ def complete_owner_booking(
         payment_status=booking.payment_status,
         payment_review_status=payment.review_status if payment else None,
     )
+
+
+def cancel_owner_booking(
+    db: Session,
+    current_user: CurrentUser,
+    booking_public_id: str,
+) -> BookingActionResponse:
+    booking = db.scalar(
+        select(Booking)
+        .join(Venue, Venue.id == Booking.venue_id)
+        .where(Booking.public_id == booking_public_id, Venue.owner_id == current_user.id)
+    )
+    if booking is None:
+        raise BookingFailure("Booking not found for this owner.", 404)
+    if booking.status == "cancelled":
+        raise BookingFailure("This booking is already cancelled.", 400)
+    if booking.status == "completed":
+        raise BookingFailure("Completed bookings cannot be cancelled.", 400)
+
+    booking.status = "cancelled"
+    booking.updated_at = datetime.utcnow()
+
+    payment = db.scalar(select(BookingPayment).where(BookingPayment.booking_id == booking.id))
+    transaction = db.scalar(select(Transaction).where(Transaction.booking_id == booking.id))
+    if transaction is not None:
+        transaction.status = "cancelled"
+
+    db.commit()
+
+    return BookingActionResponse(
+        public_id=booking.public_id,
+        status=booking.status,
+        payment_status=booking.payment_status,
+        payment_review_status=payment.review_status if payment else None,
+    )
+
+
+def refund_owner_booking(
+    db: Session,
+    current_user: CurrentUser,
+    booking_public_id: str,
+) -> BookingActionResponse:
+    booking = db.scalar(
+        select(Booking)
+        .join(Venue, Venue.id == Booking.venue_id)
+        .where(Booking.public_id == booking_public_id, Venue.owner_id == current_user.id)
+    )
+    if booking is None:
+        raise BookingFailure("Booking not found for this owner.", 404)
+    if booking.payment_status == "refunded":
+        raise BookingFailure("This booking has already been refunded.", 400)
+    if booking.payment_status != "paid":
+        raise BookingFailure("Only paid bookings can be refunded.", 400)
+
+    payment = db.scalar(select(BookingPayment).where(BookingPayment.booking_id == booking.id))
+    if payment is None:
+        raise BookingFailure("No payment record found for this booking.", 404)
+
+    now = datetime.utcnow()
+    payment.payment_status = "refunded"
+    booking.payment_status = "refunded"
+    booking.status = "cancelled"
+    booking.updated_at = now
+
+    transaction = db.scalar(select(Transaction).where(Transaction.booking_id == booking.id))
+    if transaction is not None:
+        transaction.payment_status = "refunded"
+        transaction.status = "cancelled"
+
+    db.commit()
+
+    return BookingActionResponse(
+        public_id=booking.public_id,
+        status=booking.status,
+        payment_status=booking.payment_status,
+        payment_review_status=payment.review_status,
+    )
+
+
+def create_player_booking(
+    db: Session,
+    current_user: CurrentUser,
+    payload: BookingCreateRequest,
+) -> BookingResponse:
+    if payload.booking_type == "private":
+        return create_private_booking(db, current_user, payload)
+    if payload.booking_type == "open_play":
+        return create_open_play_booking(db, current_user, payload)
+    if payload.booking_type == "whole_gym":
+        return create_whole_gym_booking(db, current_user, payload)
+
+    raise BookingFailure("Unsupported booking type.", 400)
 
 
 def create_private_booking(
@@ -530,6 +673,483 @@ def create_private_booking(
         booking_date=payload.booking_date,
         slot_labels=slot_labels,
         participant_count=1,
+        status="pending",
+        payment_status="paid",
+        total_amount=round(total_amount, 2),
+    )
+
+
+def create_open_play_booking(
+    db: Session,
+    current_user: CurrentUser,
+    payload: BookingCreateRequest,
+) -> BookingResponse:
+    if payload.booking_type != "open_play":
+        raise BookingFailure("Invalid booking type for Open Play.", 400)
+
+    if payload.booking_date < date.today():
+        raise BookingFailure("Booking date cannot be in the past.", 400)
+
+    if payload.participant_count < 1:
+        raise BookingFailure("Open Play requires at least one participant.", 400)
+
+    slot_labels = _sorted_unique_slots(payload.slot_labels)
+    if not slot_labels:
+        raise BookingFailure("Select at least one time slot.", 400)
+
+    venue = db.scalar(select(Venue).where(Venue.public_id == payload.venue_public_id))
+    if venue is None:
+        raise BookingFailure("Venue not found.", 404)
+    if venue.status != "active":
+        raise BookingFailure("This venue is not accepting bookings right now.", 400)
+
+    if not payload.court_public_id:
+        raise BookingFailure("A court is required for Open Play booking.", 400)
+
+    court = db.scalar(
+        select(Court).where(
+            Court.public_id == payload.court_public_id,
+            Court.venue_id == venue.id,
+        )
+    )
+    if court is None:
+        raise BookingFailure("Court not found for this venue.", 404)
+    if court.status != "available":
+        raise BookingFailure("This court is not available for booking.", 400)
+    if court.booking_mode != "open_play":
+        raise BookingFailure("This court is not configured for Open Play.", 400)
+    if court.open_play_capacity is None or court.open_play_capacity <= 0:
+        raise BookingFailure("This Open Play court has no valid player capacity.", 400)
+
+    available_slots = db.scalars(
+        select(CourtAvailableSlot.slot_label).where(CourtAvailableSlot.court_id == court.id)
+    ).all()
+    available_slot_set = set(available_slots)
+    invalid_slots = [slot for slot in slot_labels if slot not in available_slot_set]
+    if invalid_slots:
+        raise BookingFailure(
+            f"Some selected slots are no longer available: {', '.join(invalid_slots)}.",
+            400,
+        )
+
+    payment_method = db.scalar(
+        select(VenuePaymentMethod).where(
+            VenuePaymentMethod.venue_id == venue.id,
+            VenuePaymentMethod.is_active.is_(True),
+            (
+                VenuePaymentMethod.id == payload.payment.venue_payment_method_id
+                if payload.payment.venue_payment_method_id is not None
+                else (
+                    (VenuePaymentMethod.provider == payload.payment.provider)
+                    & (VenuePaymentMethod.account_number == payload.payment.account_number)
+                )
+            ),
+        )
+    )
+    if payment_method is None:
+        raise BookingFailure("Selected payment method is not available.", 400)
+
+    rental_items: list[tuple[RentalItem, int]] = []
+    rental_amount = 0.0
+    for rental in payload.rentals:
+        item = db.scalar(
+            select(RentalItem).where(
+                RentalItem.public_id == rental.rental_item_public_id,
+                RentalItem.venue_id == venue.id,
+            )
+        )
+        if item is None or item.status != "available":
+            raise BookingFailure(
+                f"Rental item {rental.rental_item_public_id} is not available.",
+                400,
+            )
+
+        existing_qty = (
+            db.scalar(
+                select(func.coalesce(func.sum(BookingRental.quantity), 0))
+                .join(Booking, Booking.id == BookingRental.booking_id)
+                .where(
+                    BookingRental.rental_item_id == item.id,
+                    Booking.booking_date == payload.booking_date,
+                    Booking.status != "cancelled",
+                )
+            )
+            or 0
+        )
+        if existing_qty + rental.quantity > item.quantity_available:
+            raise BookingFailure(
+                f"Only {max(0, item.quantity_available - existing_qty)} {item.name} left for {payload.booking_date}.",
+                400,
+            )
+
+        rental_items.append((item, rental.quantity))
+        rental_amount += float(item.price_per_session) * rental.quantity
+
+    whole_gym_conflicts = db.scalars(
+        select(BookingSlot.slot_label)
+        .join(Booking, Booking.id == BookingSlot.booking_id)
+        .where(
+            Booking.venue_id == venue.id,
+            Booking.booking_date == payload.booking_date,
+            Booking.status != "cancelled",
+            Booking.booking_type == "whole_gym",
+            BookingSlot.slot_label.in_(slot_labels),
+        )
+    ).all()
+    if whole_gym_conflicts:
+        taken = ", ".join(sorted(set(whole_gym_conflicts)))
+        raise BookingFailure(f"These slots have already been taken: {taken}.", 409)
+
+    seats_taken_rows = db.execute(
+        select(
+            BookingSlot.slot_label,
+            func.coalesce(func.sum(Booking.participant_count), 0),
+        )
+        .join(Booking, Booking.id == BookingSlot.booking_id)
+        .where(
+            Booking.venue_id == venue.id,
+            Booking.court_id == court.id,
+            Booking.booking_type == "open_play",
+            Booking.booking_date == payload.booking_date,
+            Booking.status != "cancelled",
+            BookingSlot.slot_label.in_(slot_labels),
+        )
+        .group_by(BookingSlot.slot_label)
+    ).all()
+    seats_taken_map = {slot_label: int(total) for slot_label, total in seats_taken_rows}
+    over_capacity_slots = [
+        slot
+        for slot in slot_labels
+        if seats_taken_map.get(slot, 0) + payload.participant_count > court.open_play_capacity
+    ]
+    if over_capacity_slots:
+        taken = ", ".join(sorted(set(over_capacity_slots)))
+        raise BookingFailure(
+            f"These Open Play slots are already full or no longer have enough seats: {taken}.",
+            409,
+        )
+
+    player = db.scalar(select(Player).where(Player.id == current_user.id))
+    if player is None:
+        raise BookingFailure("Player account not found.", 404)
+
+    seat_price = float(court.price_per_hour) / court.open_play_capacity
+    base_amount = seat_price * len(slot_labels) * payload.participant_count
+    total_amount = base_amount + rental_amount
+    if round(total_amount, 2) != round(payload.total_amount, 2):
+        raise BookingFailure(
+            f"Booking price changed. Expected {total_amount:.2f}, received {payload.total_amount:.2f}.",
+            409,
+        )
+
+    public_id = _generate_booking_public_id(db)
+    created_at = datetime.utcnow()
+    booking = Booking(
+        public_id=public_id,
+        player_id=player.id,
+        original_player_id=player.id,
+        venue_id=venue.id,
+        court_id=court.id,
+        booking_type="open_play",
+        booking_date=payload.booking_date,
+        participant_count=payload.participant_count,
+        status="pending",
+        payment_status="paid",
+        booked_by_name_snapshot=player.full_name,
+        booked_by_email_snapshot=player.email,
+        owner_name_snapshot=player.full_name,
+        owner_email_snapshot=player.email,
+        base_amount=base_amount,
+        rental_amount=rental_amount,
+        total_amount=total_amount,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    db.add(booking)
+    db.flush()
+
+    for index, slot_label in enumerate(slot_labels, start=1):
+        db.add(
+            BookingSlot(
+                booking_id=booking.id,
+                slot_label=slot_label,
+                sort_order=index,
+            )
+        )
+
+    for item, quantity in rental_items:
+        db.add(
+            BookingRental(
+                booking_id=booking.id,
+                rental_item_id=item.id,
+                item_name_snapshot=item.name,
+                category_snapshot=item.category,
+                price_per_session_snapshot=item.price_per_session,
+                quantity=quantity,
+            )
+        )
+
+    payment_label = f"{payment_method.provider} - {payment_method.account_number}"
+    db.add(
+        BookingPayment(
+            booking_id=booking.id,
+            venue_payment_method_id=payment_method.id,
+            amount=total_amount,
+            payment_method_label=payment_label,
+            review_status="pending",
+            payment_status="paid",
+            reference_number=payload.payment.reference_number.strip(),
+            sender_account_name=payload.payment.sender_account_name.strip(),
+            receipt_file_name=payload.payment.receipt_file_name.strip(),
+            receipt_image_url=payload.payment.receipt_image_url,
+            receipt_uploaded_at=created_at,
+        )
+    )
+
+    db.add(
+        Transaction(
+            public_id=public_id,
+            booking_id=booking.id,
+            player_id=player.id,
+            venue_id=venue.id,
+            court_id=court.id,
+            booking_type="open_play",
+            amount=total_amount,
+            payment_method_label=payment_label,
+            payment_status="paid",
+            status="pending",
+            created_at=created_at,
+        )
+    )
+
+    db.commit()
+
+    return BookingResponse(
+        public_id=public_id,
+        venue_public_id=venue.public_id,
+        court_public_id=court.public_id,
+        booking_type="open_play",
+        booking_date=payload.booking_date,
+        slot_labels=slot_labels,
+        participant_count=payload.participant_count,
+        status="pending",
+        payment_status="paid",
+        total_amount=round(total_amount, 2),
+    )
+
+
+def create_whole_gym_booking(
+    db: Session,
+    current_user: CurrentUser,
+    payload: BookingCreateRequest,
+) -> BookingResponse:
+    if payload.booking_type != "whole_gym":
+        raise BookingFailure("Invalid booking type for whole gym booking.", 400)
+
+    if payload.booking_date < date.today():
+        raise BookingFailure("Booking date cannot be in the past.", 400)
+
+    if payload.participant_count < 1:
+        raise BookingFailure("Whole gym booking requires at least one participant.", 400)
+
+    slot_labels = _sorted_unique_slots(payload.slot_labels)
+    if not slot_labels:
+        raise BookingFailure("Select at least one time slot.", 400)
+
+    venue = db.scalar(select(Venue).where(Venue.public_id == payload.venue_public_id))
+    if venue is None:
+        raise BookingFailure("Venue not found.", 404)
+    if venue.status != "active":
+        raise BookingFailure("This venue is not accepting bookings right now.", 400)
+
+    settings = db.scalar(
+        select(VenueBookingSettings).where(VenueBookingSettings.venue_id == venue.id)
+    )
+    if settings is None or not settings.whole_gym_enabled:
+        raise BookingFailure("This venue is not configured for whole gym booking.", 400)
+    if settings.whole_gym_price_per_hour is None:
+        raise BookingFailure("Whole gym pricing is not configured for this venue.", 400)
+
+    available_slots = db.scalars(
+        select(VenueAvailableSlot.slot_label).where(VenueAvailableSlot.venue_id == venue.id)
+    ).all()
+    available_slot_set = set(available_slots)
+    invalid_slots = [slot for slot in slot_labels if slot not in available_slot_set]
+    if invalid_slots:
+        raise BookingFailure(
+            f"Some selected slots are no longer available: {', '.join(invalid_slots)}.",
+            400,
+        )
+
+    payment_method = db.scalar(
+        select(VenuePaymentMethod).where(
+            VenuePaymentMethod.venue_id == venue.id,
+            VenuePaymentMethod.is_active.is_(True),
+            (
+                VenuePaymentMethod.id == payload.payment.venue_payment_method_id
+                if payload.payment.venue_payment_method_id is not None
+                else (
+                    (VenuePaymentMethod.provider == payload.payment.provider)
+                    & (VenuePaymentMethod.account_number == payload.payment.account_number)
+                )
+            ),
+        )
+    )
+    if payment_method is None:
+        raise BookingFailure("Selected payment method is not available.", 400)
+
+    rental_items: list[tuple[RentalItem, int]] = []
+    rental_amount = 0.0
+    for rental in payload.rentals:
+        item = db.scalar(
+            select(RentalItem).where(
+                RentalItem.public_id == rental.rental_item_public_id,
+                RentalItem.venue_id == venue.id,
+            )
+        )
+        if item is None or item.status != "available":
+            raise BookingFailure(
+                f"Rental item {rental.rental_item_public_id} is not available.",
+                400,
+            )
+
+        existing_qty = (
+            db.scalar(
+                select(func.coalesce(func.sum(BookingRental.quantity), 0))
+                .join(Booking, Booking.id == BookingRental.booking_id)
+                .where(
+                    BookingRental.rental_item_id == item.id,
+                    Booking.booking_date == payload.booking_date,
+                    Booking.status != "cancelled",
+                )
+            )
+            or 0
+        )
+        if existing_qty + rental.quantity > item.quantity_available:
+            raise BookingFailure(
+                f"Only {max(0, item.quantity_available - existing_qty)} {item.name} left for {payload.booking_date}.",
+                400,
+            )
+
+        rental_items.append((item, rental.quantity))
+        rental_amount += float(item.price_per_session) * rental.quantity
+
+    conflicting_slots = db.scalars(
+        select(BookingSlot.slot_label)
+        .join(Booking, Booking.id == BookingSlot.booking_id)
+        .where(
+            Booking.venue_id == venue.id,
+            Booking.booking_date == payload.booking_date,
+            Booking.status != "cancelled",
+            BookingSlot.slot_label.in_(slot_labels),
+        )
+    ).all()
+    if conflicting_slots:
+        taken = ", ".join(sorted(set(conflicting_slots)))
+        raise BookingFailure(f"These slots have already been taken: {taken}.", 409)
+
+    player = db.scalar(select(Player).where(Player.id == current_user.id))
+    if player is None:
+        raise BookingFailure("Player account not found.", 404)
+
+    base_amount = float(settings.whole_gym_price_per_hour) * len(slot_labels)
+    total_amount = base_amount + rental_amount
+    if round(total_amount, 2) != round(payload.total_amount, 2):
+        raise BookingFailure(
+            f"Booking price changed. Expected {total_amount:.2f}, received {payload.total_amount:.2f}.",
+            409,
+        )
+
+    public_id = _generate_booking_public_id(db)
+    created_at = datetime.utcnow()
+    booking = Booking(
+        public_id=public_id,
+        player_id=player.id,
+        original_player_id=player.id,
+        venue_id=venue.id,
+        court_id=None,
+        booking_type="whole_gym",
+        booking_date=payload.booking_date,
+        participant_count=payload.participant_count,
+        status="pending",
+        payment_status="paid",
+        booked_by_name_snapshot=player.full_name,
+        booked_by_email_snapshot=player.email,
+        owner_name_snapshot=player.full_name,
+        owner_email_snapshot=player.email,
+        base_amount=base_amount,
+        rental_amount=rental_amount,
+        total_amount=total_amount,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    db.add(booking)
+    db.flush()
+
+    for index, slot_label in enumerate(slot_labels, start=1):
+        db.add(
+            BookingSlot(
+                booking_id=booking.id,
+                slot_label=slot_label,
+                sort_order=index,
+            )
+        )
+
+    for item, quantity in rental_items:
+        db.add(
+            BookingRental(
+                booking_id=booking.id,
+                rental_item_id=item.id,
+                item_name_snapshot=item.name,
+                category_snapshot=item.category,
+                price_per_session_snapshot=item.price_per_session,
+                quantity=quantity,
+            )
+        )
+
+    payment_label = f"{payment_method.provider} - {payment_method.account_number}"
+    db.add(
+        BookingPayment(
+            booking_id=booking.id,
+            venue_payment_method_id=payment_method.id,
+            amount=total_amount,
+            payment_method_label=payment_label,
+            review_status="pending",
+            payment_status="paid",
+            reference_number=payload.payment.reference_number.strip(),
+            sender_account_name=payload.payment.sender_account_name.strip(),
+            receipt_file_name=payload.payment.receipt_file_name.strip(),
+            receipt_image_url=payload.payment.receipt_image_url,
+            receipt_uploaded_at=created_at,
+        )
+    )
+
+    db.add(
+        Transaction(
+            public_id=public_id,
+            booking_id=booking.id,
+            player_id=player.id,
+            venue_id=venue.id,
+            court_id=None,
+            booking_type="whole_gym",
+            amount=total_amount,
+            payment_method_label=payment_label,
+            payment_status="paid",
+            status="pending",
+            created_at=created_at,
+        )
+    )
+
+    db.commit()
+
+    return BookingResponse(
+        public_id=public_id,
+        venue_public_id=venue.public_id,
+        court_public_id=None,
+        booking_type="whole_gym",
+        booking_date=payload.booking_date,
+        slot_labels=slot_labels,
+        participant_count=payload.participant_count,
         status="pending",
         payment_status="paid",
         total_amount=round(total_amount, 2),

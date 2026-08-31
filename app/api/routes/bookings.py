@@ -14,10 +14,13 @@ from app.schemas.common import CurrentUser
 from app.services.booking_service import (
     BookingFailure,
     approve_booking_payment,
+    cancel_owner_booking,
     complete_owner_booking,
-    create_private_booking,
+    create_player_booking,
     list_owner_booking_reviews,
     list_player_bookings,
+    refund_owner_booking,
+    reject_booking_payment,
 )
 
 
@@ -47,7 +50,7 @@ def create_booking(
     db: Session = Depends(get_db),
 ) -> BookingResponse:
     try:
-        return create_private_booking(db, current_user, payload)
+        return create_player_booking(db, current_user, payload)
     except BookingFailure as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -69,6 +72,18 @@ def approve_booking(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
+@router.post("/{booking_public_id}/reject", response_model=BookingActionResponse)
+def reject_booking(
+    booking_public_id: str,
+    current_user: CurrentUser = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+) -> BookingActionResponse:
+    try:
+        return reject_booking_payment(db, current_user, booking_public_id)
+    except BookingFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
 @router.post("/{booking_public_id}/complete", response_model=BookingActionResponse)
 def complete_booking(
     booking_public_id: str,
@@ -81,6 +96,25 @@ def complete_booking(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
-@router.post("/{booking_public_id}/reject")
-def reject_booking(booking_public_id: str) -> dict[str, str]:
-    return {"booking_public_id": booking_public_id, "status": "rejected"}
+@router.post("/{booking_public_id}/cancel", response_model=BookingActionResponse)
+def cancel_booking(
+    booking_public_id: str,
+    current_user: CurrentUser = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+) -> BookingActionResponse:
+    try:
+        return cancel_owner_booking(db, current_user, booking_public_id)
+    except BookingFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/{booking_public_id}/refund", response_model=BookingActionResponse)
+def refund_booking(
+    booking_public_id: str,
+    current_user: CurrentUser = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+) -> BookingActionResponse:
+    try:
+        return refund_owner_booking(db, current_user, booking_public_id)
+    except BookingFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
