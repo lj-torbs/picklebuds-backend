@@ -14,7 +14,7 @@ class OwnerVenuePaymentMethodInput(BaseModel):
     account_name: str = Field(min_length=1, max_length=160)
     account_number: str = Field(min_length=1, max_length=120)
     instructions: str | None = None
-    qr_code_image_url: str = Field(min_length=1, max_length=500)
+    qr_code_image_url: str = Field(min_length=1, max_length=2_000_000)
     qr_code_file_name: str = Field(min_length=1, max_length=255)
     is_active: bool = True
 
@@ -41,7 +41,7 @@ class OwnerVenueUpsertRequest(BaseModel):
     address: str = Field(min_length=1, max_length=255)
     phone: str | None = Field(default=None, max_length=32)
     status: VenueStatus
-    image_url: str | None = Field(default=None, max_length=500)
+    image_url: str | None = Field(default=None, max_length=2_000_000)
     payment_methods: list[OwnerVenuePaymentMethodInput] = Field(default_factory=list)
     whole_gym_booking: OwnerVenueWholeGymInput | None = None
     rental_items: list[OwnerVenueRentalItemInput] = Field(default_factory=list)
@@ -56,7 +56,7 @@ class OwnerCourtUpsertRequest(BaseModel):
     booking_mode: str
     open_play_capacity: int | None = Field(default=None, ge=2)
     available_slots: list[str] = Field(default_factory=list)
-    image_url: str | None = Field(default=None, max_length=500)
+    image_url: str | None = Field(default=None, max_length=2_000_000)
 
 
 class OwnerStatusUpdateRequest(BaseModel):

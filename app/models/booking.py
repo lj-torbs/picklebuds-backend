@@ -74,7 +74,7 @@ class BookingPayment(Base, TimestampMixin):
     reference_number: Mapped[str | None] = mapped_column(String(120))
     sender_account_name: Mapped[str | None] = mapped_column(String(160))
     receipt_file_name: Mapped[str | None] = mapped_column(String(255))
-    receipt_image_url: Mapped[str | None] = mapped_column(String(500))
+    receipt_image_url: Mapped[str | None] = mapped_column(Text)
     receipt_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime)
     review_note: Mapped[str | None] = mapped_column(Text)
     approved_by_owner_id: Mapped[int | None] = mapped_column(ForeignKey("owners.id"))

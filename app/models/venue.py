@@ -19,7 +19,7 @@ class Venue(Base, TimestampMixin):
         nullable=False,
         default="active",
     )
-    image_url: Mapped[str | None] = mapped_column(String(500))
+    image_url: Mapped[str | None] = mapped_column(Text)
 
 
 class VenueBookingSettings(Base, TimestampMixin):
@@ -54,7 +54,7 @@ class VenuePaymentMethod(Base, TimestampMixin):
     account_name: Mapped[str] = mapped_column(String(160), nullable=False)
     account_number: Mapped[str] = mapped_column(String(120), nullable=False)
     instructions: Mapped[str | None] = mapped_column(Text)
-    qr_code_image_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    qr_code_image_url: Mapped[str] = mapped_column(Text, nullable=False)
     qr_code_file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
 
@@ -80,7 +80,7 @@ class Court(Base, TimestampMixin):
         default="private",
     )
     open_play_capacity: Mapped[int | None] = mapped_column(Integer)
-    image_url: Mapped[str | None] = mapped_column(String(500))
+    image_url: Mapped[str | None] = mapped_column(Text)
 
 
 class CourtAvailableSlot(Base):

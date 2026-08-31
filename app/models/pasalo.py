@@ -36,7 +36,7 @@ class PasaloClaim(Base):
     reference_number: Mapped[str] = mapped_column(String(120), nullable=False)
     sender_account_name: Mapped[str] = mapped_column(String(160), nullable=False)
     receipt_file_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    receipt_image_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    receipt_image_url: Mapped[str] = mapped_column(Text, nullable=False)
     review_note: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         Enum("pending", "approved", "rejected", "cancelled", name="pasalo_claim_status"),

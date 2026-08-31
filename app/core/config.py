@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_debug: bool = True
     allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    allowed_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1):\d+$"
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 120
