@@ -28,6 +28,10 @@ from app.schemas.booking import (
     OwnerBookingReviewListResponse,
 )
 from app.schemas.common import CurrentUser
+from app.services.notification_service import (
+    create_owner_notification,
+    create_player_notification,
+)
 
 
 @dataclass
@@ -54,6 +58,53 @@ def _sorted_unique_slots(slot_labels: list[str]) -> list[str]:
             normalized.append(cleaned)
             seen.add(cleaned)
     return normalized
+
+
+def _slot_start_minutes(slot_label: str) -> int | None:
+    start_label = slot_label.split(" - ", 1)[0].strip()
+    parts = start_label.split()
+    time_part = parts[0] if parts else ""
+    suffix = parts[1].upper() if len(parts) > 1 else None
+
+    if ":" not in time_part:
+        return None
+
+    try:
+        hours_raw, minutes_raw = time_part.split(":", 1)
+        hours = int(hours_raw)
+        minutes = int(minutes_raw)
+    except ValueError:
+        return None
+
+    if suffix == "PM" and hours != 12:
+        hours += 12
+    if suffix == "AM" and hours == 12:
+        hours = 0
+
+    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+        return None
+
+    return hours * 60 + minutes
+
+
+def _reject_past_today_slots(booking_date: date, slot_labels: list[str]) -> None:
+    if booking_date != date.today():
+        return
+
+    now = datetime.now()
+    current_minutes = now.hour * 60 + now.minute
+    past_slots = [
+        slot
+        for slot in slot_labels
+        if (start_minutes := _slot_start_minutes(slot)) is not None
+        and start_minutes <= current_minutes
+    ]
+
+    if past_slots:
+        raise BookingFailure(
+            f"These slots have already started or passed today: {', '.join(past_slots)}.",
+            400,
+        )
 
 
 def _build_rental_snapshot_map(db: Session, booking_ids: list[int]) -> dict[int, list[BookingRentalSnapshotResponse]]:
@@ -164,10 +215,15 @@ def list_player_bookings(db: Session, current_user: CurrentUser) -> BookingListR
 
 
 def list_owner_booking_reviews(db: Session, current_user: CurrentUser) -> OwnerBookingReviewListResponse:
+    owner_venue_ids = db.scalars(
+        select(Venue.id).where(Venue.owner_id == current_user.id)
+    ).all()
+    if not owner_venue_ids:
+        return OwnerBookingReviewListResponse(items=[])
+
     bookings = db.scalars(
         select(Booking)
-        .join(Venue, Venue.id == Booking.venue_id)
-        .where(Venue.owner_id == current_user.id)
+        .where(Booking.venue_id.in_(owner_venue_ids))
         .order_by(Booking.created_at.desc(), Booking.id.desc())
     ).all()
 
@@ -180,12 +236,22 @@ def list_owner_booking_reviews(db: Session, current_user: CurrentUser) -> OwnerB
 
     venues = {
         venue.id: venue
-        for venue in db.scalars(select(Venue).where(Venue.id.in_(venue_ids))).all()
+        for venue in db.scalars(
+            select(Venue).where(
+                Venue.id.in_(venue_ids),
+                Venue.owner_id == current_user.id,
+            )
+        ).all()
     }
     courts = (
         {
             court.id: court
-            for court in db.scalars(select(Court).where(Court.id.in_(court_ids))).all()
+            for court in db.scalars(
+                select(Court).where(
+                    Court.id.in_(court_ids),
+                    Court.venue_id.in_(venue_ids),
+                )
+            ).all()
         }
         if court_ids
         else {}
@@ -270,6 +336,26 @@ def approve_booking_payment(
     if transaction is not None:
         transaction.status = "confirmed"
         transaction.payment_status = "paid"
+
+    venue = db.scalar(select(Venue).where(Venue.id == booking.venue_id))
+    court = (
+        db.scalar(select(Court).where(Court.id == booking.court_id))
+        if booking.court_id is not None
+        else None
+    )
+    create_player_notification(
+        db,
+        player_id=booking.player_id,
+        booking_id=booking.id,
+        title="Booking accepted",
+        message=(
+            f"Your booking {booking.public_id} at "
+            f"{venue.name if venue else 'the venue'} for "
+            f"{court.name if court else 'whole gym'} has been accepted."
+        ),
+        action_url="/my-bookings",
+        created_at=now,
+    )
 
     db.commit()
 
@@ -382,6 +468,69 @@ def cancel_owner_booking(
     if transaction is not None:
         transaction.status = "cancelled"
 
+    venue = db.scalar(select(Venue).where(Venue.id == booking.venue_id))
+    create_player_notification(
+        db,
+        player_id=booking.player_id,
+        booking_id=booking.id,
+        title="Booking cancelled",
+        message=(
+            f"Your booking {booking.public_id} at "
+            f"{venue.name if venue else 'the venue'} was cancelled by the owner."
+        ),
+        action_url="/my-bookings",
+        created_at=datetime.utcnow(),
+    )
+
+    db.commit()
+
+    return BookingActionResponse(
+        public_id=booking.public_id,
+        status=booking.status,
+        payment_status=booking.payment_status,
+        payment_review_status=payment.review_status if payment else None,
+    )
+
+
+def cancel_player_booking(
+    db: Session,
+    current_user: CurrentUser,
+    booking_public_id: str,
+) -> BookingActionResponse:
+    booking = db.scalar(
+        select(Booking).where(
+            Booking.public_id == booking_public_id,
+            Booking.player_id == current_user.id,
+        )
+    )
+    if booking is None:
+        raise BookingFailure("Booking not found for this player.", 404)
+    if booking.status == "cancelled":
+        raise BookingFailure("This booking is already cancelled.", 400)
+    if booking.status == "completed":
+        raise BookingFailure("Completed bookings cannot be cancelled.", 400)
+
+    now = datetime.utcnow()
+    booking.status = "cancelled"
+    booking.updated_at = now
+
+    payment = db.scalar(select(BookingPayment).where(BookingPayment.booking_id == booking.id))
+    transaction = db.scalar(select(Transaction).where(Transaction.booking_id == booking.id))
+    if transaction is not None:
+        transaction.status = "cancelled"
+
+    venue = db.scalar(select(Venue).where(Venue.id == booking.venue_id))
+    if venue is not None:
+        create_owner_notification(
+            db,
+            owner_id=venue.owner_id,
+            booking_id=booking.id,
+            title="Booking cancelled by player",
+            message=f"{booking.booked_by_name_snapshot} cancelled booking {booking.public_id} at {venue.name}.",
+            action_url=f"/owner/transactions?focus={booking.public_id}",
+            created_at=now,
+        )
+
     db.commit()
 
     return BookingActionResponse(
@@ -469,6 +618,7 @@ def create_private_booking(
     slot_labels = _sorted_unique_slots(payload.slot_labels)
     if not slot_labels:
         raise BookingFailure("Select at least one time slot.", 400)
+    _reject_past_today_slots(payload.booking_date, slot_labels)
 
     venue = db.scalar(select(Venue).where(Venue.public_id == payload.venue_public_id))
     if venue is None:
@@ -663,6 +813,19 @@ def create_private_booking(
         )
     )
 
+    create_owner_notification(
+        db,
+        owner_id=venue.owner_id,
+        booking_id=booking.id,
+        title="New booking submitted",
+        message=(
+            f"{player.full_name} booked {court.name} at {venue.name} "
+            f"for {payload.booking_date} ({', '.join(slot_labels)})."
+        ),
+        action_url=f"/owner/transactions?focus={public_id}",
+        created_at=created_at,
+    )
+
     db.commit()
 
     return BookingResponse(
@@ -696,6 +859,7 @@ def create_open_play_booking(
     slot_labels = _sorted_unique_slots(payload.slot_labels)
     if not slot_labels:
         raise BookingFailure("Select at least one time slot.", 400)
+    _reject_past_today_slots(payload.booking_date, slot_labels)
 
     venue = db.scalar(select(Venue).where(Venue.public_id == payload.venue_public_id))
     if venue is None:
@@ -922,6 +1086,19 @@ def create_open_play_booking(
         )
     )
 
+    create_owner_notification(
+        db,
+        owner_id=venue.owner_id,
+        booking_id=booking.id,
+        title="New Open Play booking",
+        message=(
+            f"{player.full_name} joined Open Play on {court.name} at {venue.name} "
+            f"for {payload.booking_date} ({', '.join(slot_labels)})."
+        ),
+        action_url=f"/owner/transactions?focus={public_id}",
+        created_at=created_at,
+    )
+
     db.commit()
 
     return BookingResponse(
@@ -955,6 +1132,7 @@ def create_whole_gym_booking(
     slot_labels = _sorted_unique_slots(payload.slot_labels)
     if not slot_labels:
         raise BookingFailure("Select at least one time slot.", 400)
+    _reject_past_today_slots(payload.booking_date, slot_labels)
 
     venue = db.scalar(select(Venue).where(Venue.public_id == payload.venue_public_id))
     if venue is None:
@@ -1138,6 +1316,19 @@ def create_whole_gym_booking(
             status="pending",
             created_at=created_at,
         )
+    )
+
+    create_owner_notification(
+        db,
+        owner_id=venue.owner_id,
+        booking_id=booking.id,
+        title="New whole gym booking",
+        message=(
+            f"{player.full_name} requested whole gym booking at {venue.name} "
+            f"for {payload.booking_date} ({', '.join(slot_labels)})."
+        ),
+        action_url=f"/owner/transactions?focus={public_id}",
+        created_at=created_at,
     )
 
     db.commit()

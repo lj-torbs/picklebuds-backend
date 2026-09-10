@@ -451,17 +451,26 @@ CREATE TABLE `owner_settlements` (
 
 CREATE TABLE `notifications` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `player_id` BIGINT UNSIGNED NOT NULL,
+  `recipient_type` ENUM('player', 'owner') NOT NULL,
+  `player_id` BIGINT UNSIGNED NULL,
+  `owner_id` BIGINT UNSIGNED NULL,
   `booking_id` BIGINT UNSIGNED NULL,
   `title` VARCHAR(160) NOT NULL,
   `message` TEXT NOT NULL,
+  `action_url` VARCHAR(255) NULL,
   `is_read` TINYINT(1) NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  KEY `idx_notifications_recipient_type` (`recipient_type`),
   KEY `idx_notifications_player_id` (`player_id`),
+  KEY `idx_notifications_owner_id` (`owner_id`),
   KEY `idx_notifications_booking_id` (`booking_id`),
   CONSTRAINT `fk_notifications_player`
     FOREIGN KEY (`player_id`) REFERENCES `players` (`id`)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE,
+  CONSTRAINT `fk_notifications_owner`
+    FOREIGN KEY (`owner_id`) REFERENCES `owners` (`id`)
     ON UPDATE CASCADE
     ON DELETE CASCADE,
   CONSTRAINT `fk_notifications_booking`
@@ -652,12 +661,14 @@ VALUES
   (2, 2, '2026-08-01', '2026-08-31', 71.00, 8.52, 62.48, 'paid', NULL, '2026-08-20 18:00:00', NULL, '2026-08-24 08:05:00'),
   (3, 3, '2026-08-01', '2026-08-31', 32.00, 3.84, 28.16, 'unpaid', '2026-08-22 09:00:00', NULL, 'Owner access locked until settlement is paid.', '2026-08-24 08:10:00');
 
-INSERT INTO `notifications` (`id`, `player_id`, `booking_id`, `title`, `message`, `is_read`, `created_at`)
+INSERT INTO `notifications` (`id`, `recipient_type`, `player_id`, `owner_id`, `booking_id`, `title`, `message`, `action_url`, `is_read`, `created_at`)
 VALUES
-  (1, 2, 2, 'Payment submitted', 'Your booking PB-1043 is waiting for owner approval after receipt upload.', 0, '2026-08-20 22:20:00'),
-  (2, 4, 10, 'Booking pending approval', 'Your Tagum Pickleball Hub booking is pending manual owner verification.', 0, '2026-08-21 19:50:00'),
-  (3, 1, 1, 'Booking confirmed', 'Your court booking at Tagum Pickleball Hub has been confirmed.', 1, '2026-08-19 09:18:00'),
-  (4, 7, 9, 'Open Play pending review', 'Your Open Play booking is waiting for payment verification.', 0, '2026-08-21 15:50:00'),
-  (5, 1, 5, 'Pasalo claim submitted', 'Your Pasalo claim is waiting for owner review before the booking can be transferred.', 0, '2026-08-21 16:12:00');
+  (1, 'player', 2, NULL, 2, 'Payment submitted', 'Your booking PB-1043 is waiting for owner approval after receipt upload.', '/my-bookings', 0, '2026-08-20 22:20:00'),
+  (2, 'player', 4, NULL, 10, 'Booking pending approval', 'Your Tagum Pickleball Hub booking is pending manual owner verification.', '/my-bookings', 0, '2026-08-21 19:50:00'),
+  (3, 'player', 1, NULL, 1, 'Booking confirmed', 'Your court booking at Tagum Pickleball Hub has been confirmed.', '/my-bookings', 1, '2026-08-19 09:18:00'),
+  (4, 'player', 7, NULL, 9, 'Open Play pending review', 'Your Open Play booking is waiting for payment verification.', '/my-bookings', 0, '2026-08-21 15:50:00'),
+  (5, 'player', 1, NULL, 5, 'Pasalo claim submitted', 'Your Pasalo claim is waiting for owner review before the booking can be transferred.', '/my-bookings', 0, '2026-08-21 16:12:00'),
+  (6, 'owner', NULL, 1, 2, 'New booking submitted', 'Mika Santos submitted payment proof for PB-1043 at Tagum Pickleball Hub.', '/owner/transactions?focus=PB-1043', 0, '2026-08-20 22:20:00'),
+  (7, 'owner', NULL, 1, 10, 'New booking submitted', 'Ava Reyes submitted a booking request at Tagum Pickleball Hub.', '/owner/transactions?focus=PB-1071', 0, '2026-08-21 19:50:00');
 
 SET FOREIGN_KEY_CHECKS = 1;

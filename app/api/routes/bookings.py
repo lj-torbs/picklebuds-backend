@@ -15,6 +15,7 @@ from app.services.booking_service import (
     BookingFailure,
     approve_booking_payment,
     cancel_owner_booking,
+    cancel_player_booking,
     complete_owner_booking,
     create_player_booking,
     list_owner_booking_reviews,
@@ -104,6 +105,18 @@ def cancel_booking(
 ) -> BookingActionResponse:
     try:
         return cancel_owner_booking(db, current_user, booking_public_id)
+    except BookingFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/{booking_public_id}/player-cancel", response_model=BookingActionResponse)
+def cancel_player_owned_booking(
+    booking_public_id: str,
+    current_user: CurrentUser = Depends(require_role("player")),
+    db: Session = Depends(get_db),
+) -> BookingActionResponse:
+    try:
+        return cancel_player_booking(db, current_user, booking_public_id)
     except BookingFailure as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

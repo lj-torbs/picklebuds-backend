@@ -19,6 +19,7 @@ from app.services.owner_service import (
     create_owner_court,
     create_owner_venue,
     delete_owner_court,
+    delete_owner_venue,
     list_owner_transactions,
     list_owner_venues,
     OwnerManageFailure,
@@ -97,6 +98,18 @@ def update_venue_status(
 ) -> VenueDetailResponse:
     try:
         return set_owner_venue_status(db, current_user, venue_public_id, payload)
+    except OwnerManageFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.delete("/venues/{venue_public_id}")
+def delete_venue(
+    venue_public_id: str,
+    current_user: CurrentUser = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    try:
+        return delete_owner_venue(db, current_user, venue_public_id)
     except OwnerManageFailure as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

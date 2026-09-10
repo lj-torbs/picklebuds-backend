@@ -339,6 +339,33 @@ def set_owner_venue_status(
     return get_venue_detail(db, venue.public_id)
 
 
+def delete_owner_venue(
+    db: Session,
+    current_user: CurrentUser,
+    venue_public_id: str,
+) -> dict[str, str]:
+    venue = _get_owner_venue_or_fail(db, current_user, venue_public_id)
+    existing_booking = db.scalar(select(Booking.id).where(Booking.venue_id == venue.id))
+    if existing_booking is not None:
+        raise OwnerManageFailure(
+            "This gym already has booking history and cannot be deleted. Mark it as inactive instead.",
+            400,
+        )
+
+    court_ids = db.scalars(select(Court.id).where(Court.venue_id == venue.id)).all()
+    if court_ids:
+        db.execute(delete(CourtAvailableSlot).where(CourtAvailableSlot.court_id.in_(court_ids)))
+        db.execute(delete(Court).where(Court.id.in_(court_ids)))
+
+    db.execute(delete(VenueAvailableSlot).where(VenueAvailableSlot.venue_id == venue.id))
+    db.execute(delete(VenueBookingSettings).where(VenueBookingSettings.venue_id == venue.id))
+    db.execute(delete(VenuePaymentMethod).where(VenuePaymentMethod.venue_id == venue.id))
+    db.execute(delete(RentalItem).where(RentalItem.venue_id == venue.id))
+    db.delete(venue)
+    db.commit()
+    return {"detail": "Venue deleted."}
+
+
 def create_owner_court(
     db: Session,
     current_user: CurrentUser,
