@@ -1,5 +1,6 @@
 from app.models.booking import Booking, BookingPayment, BookingRental, BookingSlot
 from app.models.notification import Notification
+from app.models.owner_branding import OwnerBrandingSettings
 from app.models.pasalo import PasaloClaim, PasaloOffer
 from app.models.settlement import OwnerSettlement
 from app.models.transaction import Transaction
@@ -24,6 +25,7 @@ __all__ = [
     "CourtAvailableSlot",
     "Notification",
     "Owner",
+    "OwnerBrandingSettings",
     "OwnerSettlement",
     "PasaloClaim",
     "PasaloOffer",

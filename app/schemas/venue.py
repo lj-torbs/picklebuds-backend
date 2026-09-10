@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.owner_branding import OwnerBrandingResponse
+
 
 VenueStatus = Literal["active", "inactive"]
 CourtStatus = Literal["available", "maintenance"]
@@ -74,6 +76,7 @@ class VenueWholeGymBookingResponse(BaseModel):
 class VenueDetailResponse(BaseModel):
     public_id: str
     owner_public_id: str
+    owner_branding: OwnerBrandingResponse | None = None
     name: str
     address: str
     phone: str | None = None

@@ -27,6 +27,7 @@ from app.schemas.venue import (
     VenueWholeGymAvailabilityResponse,
     VenueWholeGymBookingResponse,
 )
+from app.services.owner_branding_service import get_public_owner_branding
 
 
 class VenueNotFound(Exception):
@@ -127,6 +128,7 @@ def get_venue_detail(db: Session, venue_public_id: str) -> VenueDetailResponse:
     return VenueDetailResponse(
         public_id=venue.public_id,
         owner_public_id=owner.public_id if owner else "",
+        owner_branding=get_public_owner_branding(db, owner),
         name=venue.name,
         address=venue.address,
         phone=venue.phone,

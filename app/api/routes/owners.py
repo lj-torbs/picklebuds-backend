@@ -14,6 +14,11 @@ from app.schemas.owner import (
     OwnerTransactionsResponse,
     OwnerVenueListResponse,
 )
+from app.schemas.owner_branding import OwnerBrandingPayload, OwnerBrandingResponse
+from app.services.owner_branding_service import (
+    get_owner_branding,
+    update_owner_branding,
+)
 from app.services.owner_service import (
     get_owner_dashboard,
     create_owner_court,
@@ -62,6 +67,23 @@ def owner_transactions(
     db: Session = Depends(get_db),
 ) -> OwnerTransactionsResponse:
     return list_owner_transactions(db, current_user)
+
+
+@router.get("/branding", response_model=OwnerBrandingResponse)
+def owner_branding(
+    current_user: CurrentUser = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+) -> OwnerBrandingResponse:
+    return get_owner_branding(db, current_user)
+
+
+@router.put("/branding", response_model=OwnerBrandingResponse)
+def save_owner_branding(
+    payload: OwnerBrandingPayload,
+    current_user: CurrentUser = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+) -> OwnerBrandingResponse:
+    return update_owner_branding(db, current_user, payload)
 
 
 @router.post("/venues", response_model=VenueDetailResponse)
