@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import Booking, BookingPayment, BookingRental, BookingSlot
 from app.models.transaction import Transaction
-from app.models.user import Player
+from app.models.user import Owner, Player
 from app.models.venue import (
     Court,
     CourtAvailableSlot,
@@ -105,6 +105,23 @@ def _reject_past_today_slots(booking_date: date, slot_labels: list[str]) -> None
             f"These slots have already started or passed today: {', '.join(past_slots)}.",
             400,
         )
+
+
+def _validate_expected_owner(
+    db: Session,
+    venue: Venue,
+    expected_owner_public_id: str | None,
+) -> None:
+    if not expected_owner_public_id:
+        return
+
+    owner = db.scalar(select(Owner).where(Owner.public_id == expected_owner_public_id))
+    if owner is None:
+        raise BookingFailure("Owner booking page not found.", 404)
+    if owner.status != "active":
+        raise BookingFailure("This owner is not accepting bookings right now.", 403)
+    if venue.owner_id != owner.id:
+        raise BookingFailure("Selected venue does not belong to this owner booking page.", 403)
 
 
 def _build_rental_snapshot_map(db: Session, booking_ids: list[int]) -> dict[int, list[BookingRentalSnapshotResponse]]:
@@ -625,6 +642,7 @@ def create_private_booking(
         raise BookingFailure("Venue not found.", 404)
     if venue.status != "active":
         raise BookingFailure("This venue is not accepting bookings right now.", 400)
+    _validate_expected_owner(db, venue, payload.expected_owner_public_id)
 
     if not payload.court_public_id:
         raise BookingFailure("A court is required for private booking.", 400)
@@ -866,6 +884,7 @@ def create_open_play_booking(
         raise BookingFailure("Venue not found.", 404)
     if venue.status != "active":
         raise BookingFailure("This venue is not accepting bookings right now.", 400)
+    _validate_expected_owner(db, venue, payload.expected_owner_public_id)
 
     if not payload.court_public_id:
         raise BookingFailure("A court is required for Open Play booking.", 400)
@@ -1139,6 +1158,7 @@ def create_whole_gym_booking(
         raise BookingFailure("Venue not found.", 404)
     if venue.status != "active":
         raise BookingFailure("This venue is not accepting bookings right now.", 400)
+    _validate_expected_owner(db, venue, payload.expected_owner_public_id)
 
     settings = db.scalar(
         select(VenueBookingSettings).where(VenueBookingSettings.venue_id == venue.id)

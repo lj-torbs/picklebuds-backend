@@ -27,6 +27,7 @@ class BookingPaymentInput(BaseModel):
 
 
 class BookingCreateRequest(BaseModel):
+    expected_owner_public_id: str | None = None
     venue_public_id: str
     court_public_id: str | None = None
     booking_type: BookingType

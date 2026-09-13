@@ -31,6 +31,16 @@ class VenueListResponse(BaseModel):
     items: list[VenueListItemResponse]
 
 
+class PublicOwnerBookingResponse(BaseModel):
+    owner_public_id: str
+    owner_name: str
+    business_name: str | None = None
+    status: str
+    is_available: bool
+    owner_branding: OwnerBrandingResponse | None = None
+    venues: list[VenueListItemResponse] = Field(default_factory=list)
+
+
 class VenuePaymentMethodResponse(BaseModel):
     id: int
     provider: PaymentProvider

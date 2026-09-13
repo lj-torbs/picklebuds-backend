@@ -15,6 +15,7 @@ from app.models.venue import (
     VenuePaymentMethod,
 )
 from app.schemas.venue import (
+    PublicOwnerBookingResponse,
     VenueAvailabilityItemResponse,
     VenueAvailabilityResponse,
     VenueCourtAvailabilityResponse,
@@ -31,6 +32,10 @@ from app.services.owner_branding_service import get_public_owner_branding
 
 
 class VenueNotFound(Exception):
+    pass
+
+
+class OwnerBookingPageNotFound(Exception):
     pass
 
 
@@ -100,6 +105,129 @@ def list_venues(db: Session) -> VenueListResponse:
             for venue in venues
         ]
     )
+
+
+def _venue_list_item(
+    venue: Venue,
+    *,
+    court_count: int,
+    has_open_play: bool,
+    whole_gym_enabled: bool,
+) -> VenueListItemResponse:
+    return VenueListItemResponse(
+        public_id=venue.public_id,
+        name=venue.name,
+        address=venue.address,
+        phone=venue.phone,
+        status=venue.status,
+        image_url=venue.image_url,
+        court_count=court_count,
+        has_open_play=has_open_play,
+        whole_gym_enabled=whole_gym_enabled,
+    )
+
+
+def get_public_owner_booking_page(
+    db: Session,
+    owner_public_id: str,
+) -> PublicOwnerBookingResponse:
+    owner = db.scalar(select(Owner).where(Owner.public_id == owner_public_id))
+    if owner is None:
+        raise OwnerBookingPageNotFound
+
+    is_available = owner.status == "active"
+    venues = db.scalars(
+        select(Venue)
+        .where(Venue.owner_id == owner.id)
+        .order_by(Venue.name.asc(), Venue.id.asc())
+    ).all()
+    venue_ids = [venue.id for venue in venues]
+
+    settings_map = {
+        row.venue_id: row
+        for row in db.scalars(
+            select(VenueBookingSettings).where(
+                VenueBookingSettings.venue_id.in_(venue_ids)
+            )
+        ).all()
+    } if venue_ids else {}
+    courts = db.scalars(
+        select(Court).where(Court.venue_id.in_(venue_ids))
+    ).all() if venue_ids else []
+    court_counts: dict[int, int] = {venue_id: 0 for venue_id in venue_ids}
+    has_open_play: dict[int, bool] = {venue_id: False for venue_id in venue_ids}
+
+    for court in courts:
+        court_counts[court.venue_id] = court_counts.get(court.venue_id, 0) + 1
+        if court.booking_mode == "open_play":
+            has_open_play[court.venue_id] = True
+
+    visible_venues = [
+        venue for venue in venues if is_available and venue.status == "active"
+    ]
+
+    return PublicOwnerBookingResponse(
+        owner_public_id=owner.public_id,
+        owner_name=owner.full_name,
+        business_name=owner.business_name,
+        status=owner.status,
+        is_available=is_available,
+        owner_branding=get_public_owner_branding(db, owner),
+        venues=[
+            _venue_list_item(
+                venue,
+                court_count=court_counts.get(venue.id, 0),
+                has_open_play=has_open_play.get(venue.id, False),
+                whole_gym_enabled=bool(
+                    settings_map.get(venue.id)
+                    and settings_map[venue.id].whole_gym_enabled
+                ),
+            )
+            for venue in visible_venues
+        ],
+    )
+
+
+def _get_owner_scoped_venue(
+    db: Session,
+    owner_public_id: str,
+    venue_public_id: str,
+) -> Venue:
+    owner = db.scalar(select(Owner).where(Owner.public_id == owner_public_id))
+    if owner is None:
+        raise OwnerBookingPageNotFound
+    if owner.status != "active":
+        raise VenueNotFound
+
+    venue = db.scalar(
+        select(Venue).where(
+            Venue.public_id == venue_public_id,
+            Venue.owner_id == owner.id,
+        )
+    )
+    if venue is None:
+        raise VenueNotFound
+    return venue
+
+
+def get_owner_scoped_venue_detail(
+    db: Session,
+    owner_public_id: str,
+    venue_public_id: str,
+) -> VenueDetailResponse:
+    _get_owner_scoped_venue(db, owner_public_id, venue_public_id)
+    return get_venue_detail(db, venue_public_id)
+
+
+def list_owner_scoped_venue_availability(
+    db: Session,
+    owner_public_id: str,
+    venue_public_id: str,
+    date_from: date | None = None,
+    days: int = 7,
+) -> VenueAvailabilityResponse:
+    _get_owner_scoped_venue(db, owner_public_id, venue_public_id)
+    return list_venue_availability(db, venue_public_id, date_from, days)
 
 
 def get_venue_detail(db: Session, venue_public_id: str) -> VenueDetailResponse:
