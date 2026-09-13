@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
 
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -13,13 +12,18 @@ from app.models.venue import Court, Venue
 from app.schemas.admin import (
     AdminOwnerDetailResponse,
     AdminOwnerListResponse,
+    AdminOwnerCourtSummary,
     AdminOwnerStatusActionResponse,
+    AdminOwnerSystemFeeUpdateResponse,
     AdminOwnerSummary,
     AdminOwnerTransactionSummary,
+    AdminOwnerVenueSummary,
 )
-
-
-SYSTEM_SHARE_RATE = Decimal("0.12")
+from app.services.system_fee_service import (
+    DEFAULT_SYSTEM_FEE_PER_TRANSACTION,
+    get_owner_system_fee_map,
+    set_owner_system_fee,
+)
 
 
 @dataclass
@@ -67,16 +71,20 @@ def _build_revenue_map(
     *,
     date_from: date | None,
     date_to: date | None,
-) -> dict[int, dict[str, float]]:
+) -> dict[int, dict[str, float | int]]:
     statement = (
         select(
             Venue.owner_id,
             func.coalesce(func.sum(Transaction.amount), 0),
+            func.count(Transaction.id),
         )
         .select_from(Transaction)
         .join(Booking, Booking.id == Transaction.booking_id)
         .join(Venue, Venue.id == Transaction.venue_id)
-        .where(Transaction.payment_status == "paid")
+        .where(
+            Transaction.payment_status == "paid",
+            Transaction.status != "cancelled",
+        )
     )
 
     if date_from is not None:
@@ -87,14 +95,12 @@ def _build_revenue_map(
     statement = statement.group_by(Venue.owner_id)
     rows = db.execute(statement).all()
 
-    revenue_map: dict[int, dict[str, float]] = {}
-    for owner_id, gross_amount in rows:
+    revenue_map: dict[int, dict[str, float | int]] = {}
+    for owner_id, gross_amount, transaction_count in rows:
         gross = float(gross_amount or 0)
-        system_share = float((Decimal(str(gross)) * SYSTEM_SHARE_RATE).quantize(Decimal("0.01")))
         revenue_map[owner_id] = {
             "gross_revenue": gross,
-            "system_share": system_share,
-            "owner_total_profit": round(gross - system_share, 2),
+            "billable_transaction_count": int(transaction_count or 0),
         }
     return revenue_map
 
@@ -126,6 +132,8 @@ def _owner_summary_from_model(
     total_gyms: int,
     total_courts: int,
     gross_revenue: float,
+    system_fee_per_transaction: float,
+    system_fee_billable_count: int,
     system_share: float,
     owner_total_profit: float,
 ) -> AdminOwnerSummary:
@@ -141,6 +149,8 @@ def _owner_summary_from_model(
         total_gyms=total_gyms,
         total_courts=total_courts,
         gross_revenue=round(gross_revenue, 2),
+        system_fee_per_transaction=round(system_fee_per_transaction, 2),
+        system_fee_billable_count=system_fee_billable_count,
         system_share=round(system_share, 2),
         owner_total_profit=round(owner_total_profit, 2),
     )
@@ -167,21 +177,28 @@ def list_admin_owners(
     owner_ids = [owner.id for owner in owners]
     gym_counts, court_counts = _build_venue_counts(db, owner_ids)
     revenue_map = _build_revenue_map(db, date_from=parsed_from, date_to=parsed_to)
+    fee_map = get_owner_system_fee_map(db, owner_ids)
 
     items = []
     for owner in owners:
         revenue = revenue_map.get(
             owner.id,
-            {"gross_revenue": 0.0, "system_share": 0.0, "owner_total_profit": 0.0},
+            {"gross_revenue": 0.0, "billable_transaction_count": 0},
         )
+        fee_per_transaction = fee_map.get(owner.id, DEFAULT_SYSTEM_FEE_PER_TRANSACTION)
+        billable_count = int(revenue["billable_transaction_count"])
+        system_share = round(billable_count * fee_per_transaction, 2)
+        gross_revenue = float(revenue["gross_revenue"])
         items.append(
             _owner_summary_from_model(
                 owner,
                 total_gyms=int(gym_counts.get(owner.id, 0) or 0),
                 total_courts=int(court_counts.get(owner.id, 0) or 0),
-                gross_revenue=revenue["gross_revenue"],
-                system_share=revenue["system_share"],
-                owner_total_profit=revenue["owner_total_profit"],
+                gross_revenue=gross_revenue,
+                system_fee_per_transaction=fee_per_transaction,
+                system_fee_billable_count=billable_count,
+                system_share=system_share,
+                owner_total_profit=round(gross_revenue - system_share, 2),
             )
         )
     return AdminOwnerListResponse(items=items)
@@ -218,6 +235,8 @@ def get_admin_owner_detail(
             total_gyms=0,
             total_courts=0,
             gross_revenue=0,
+            system_fee_per_transaction=DEFAULT_SYSTEM_FEE_PER_TRANSACTION,
+            system_fee_billable_count=0,
             system_share=0,
             owner_total_profit=0,
         )
@@ -264,7 +283,69 @@ def get_admin_owner_detail(
         )
         for row in db.execute(statement).all()
     ]
-    return AdminOwnerDetailResponse(owner=owner_summary, transactions=transactions)
+
+    venue_rows = db.execute(
+        select(
+            Venue.id,
+            Venue.public_id,
+            Venue.name,
+            Venue.address,
+            Venue.phone,
+            Venue.status,
+        )
+        .where(Venue.owner_id == owner.id)
+        .order_by(Venue.name.asc(), Venue.id.asc())
+    ).all()
+    venue_ids = [row[0] for row in venue_rows]
+    court_rows = []
+    if venue_ids:
+        court_rows = db.execute(
+            select(
+                Court.venue_id,
+                Court.public_id,
+                Court.name,
+                Court.surface,
+                Court.capacity_label,
+                Court.price_per_hour,
+                Court.status,
+                Court.booking_mode,
+                Court.open_play_capacity,
+            )
+            .where(Court.venue_id.in_(venue_ids))
+            .order_by(Court.name.asc(), Court.id.asc())
+        ).all()
+
+    courts_by_venue_id: dict[int, list[AdminOwnerCourtSummary]] = {}
+    for row in court_rows:
+        courts_by_venue_id.setdefault(row[0], []).append(
+            AdminOwnerCourtSummary(
+                id=row[1],
+                name=row[2],
+                surface=row[3],
+                capacity=row[4],
+                price_per_hour=float(row[5] or 0),
+                status=row[6],
+                booking_mode=row[7],
+                open_play_capacity=row[8],
+            )
+        )
+
+    venues = [
+        AdminOwnerVenueSummary(
+            id=row[1],
+            name=row[2],
+            address=row[3],
+            phone=row[4],
+            status=row[5],
+            courts=courts_by_venue_id.get(row[0], []),
+        )
+        for row in venue_rows
+    ]
+    return AdminOwnerDetailResponse(
+        owner=owner_summary,
+        venues=venues,
+        transactions=transactions,
+    )
 
 
 def _get_latest_owner_settlement(db: Session, owner_id: int) -> OwnerSettlement | None:
@@ -304,6 +385,29 @@ def set_owner_system_payment_status(
         status=owner.status,
         system_payment_status=owner.system_payment_status,
         suspension_reason=owner.suspension_reason,
+    )
+
+
+def update_owner_system_fee(
+    db: Session,
+    owner_public_id: str,
+    fee_per_transaction: float,
+) -> AdminOwnerSystemFeeUpdateResponse:
+    if fee_per_transaction < 0:
+        raise AdminOwnerFailure("System fee cannot be negative.", status_code=422)
+
+    owner = _get_owner_or_fail(db, owner_public_id)
+    setting = set_owner_system_fee(db, owner.id, round(fee_per_transaction, 2))
+    db.commit()
+    db.refresh(setting)
+
+    summary = list_admin_owners(db)
+    owner_summary = next((item for item in summary.items if item.id == owner_public_id), None)
+    return AdminOwnerSystemFeeUpdateResponse(
+        owner_public_id=owner.public_id,
+        fee_per_transaction=float(setting.fee_per_transaction),
+        system_share=owner_summary.system_share if owner_summary else 0,
+        owner_total_profit=owner_summary.owner_total_profit if owner_summary else 0,
     )
 
 

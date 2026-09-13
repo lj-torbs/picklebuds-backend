@@ -20,6 +20,26 @@ class AdminOwnerTransactionSummary(BaseModel):
     created_at: str
 
 
+class AdminOwnerCourtSummary(BaseModel):
+    id: str
+    name: str
+    surface: str
+    capacity: str
+    price_per_hour: float
+    status: str
+    booking_mode: str
+    open_play_capacity: int | None = None
+
+
+class AdminOwnerVenueSummary(BaseModel):
+    id: str
+    name: str
+    address: str
+    phone: str | None = None
+    status: str
+    courts: list[AdminOwnerCourtSummary]
+
+
 class AdminOwnerSummary(BaseModel):
     id: str
     name: str
@@ -32,6 +52,8 @@ class AdminOwnerSummary(BaseModel):
     total_gyms: int
     total_courts: int
     gross_revenue: float
+    system_fee_per_transaction: float
+    system_fee_billable_count: int
     system_share: float
     owner_total_profit: float
 
@@ -42,6 +64,7 @@ class AdminOwnerListResponse(BaseModel):
 
 class AdminOwnerDetailResponse(BaseModel):
     owner: AdminOwnerSummary
+    venues: list[AdminOwnerVenueSummary]
     transactions: list[AdminOwnerTransactionSummary]
 
 
@@ -54,8 +77,19 @@ class AdminOwnerStatusUpdateRequest(BaseModel):
     reason: OwnerSuspensionReason = None
 
 
+class AdminOwnerSystemFeeUpdateRequest(BaseModel):
+    fee_per_transaction: float
+
+
 class AdminOwnerStatusActionResponse(BaseModel):
     owner_public_id: str
     status: OwnerStatus
     system_payment_status: SystemPaymentStatus
     suspension_reason: OwnerSuspensionReason = None
+
+
+class AdminOwnerSystemFeeUpdateResponse(BaseModel):
+    owner_public_id: str
+    fee_per_transaction: float
+    system_share: float
+    owner_total_profit: float

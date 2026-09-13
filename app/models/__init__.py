@@ -3,6 +3,7 @@ from app.models.notification import Notification
 from app.models.owner_branding import OwnerBrandingSettings
 from app.models.pasalo import PasaloClaim, PasaloOffer
 from app.models.settlement import OwnerSettlement
+from app.models.system_fee import OwnerSystemFeeSetting
 from app.models.transaction import Transaction
 from app.models.user import Admin, Owner, Player
 from app.models.venue import (
@@ -27,6 +28,7 @@ __all__ = [
     "Owner",
     "OwnerBrandingSettings",
     "OwnerSettlement",
+    "OwnerSystemFeeSetting",
     "PasaloClaim",
     "PasaloOffer",
     "Player",

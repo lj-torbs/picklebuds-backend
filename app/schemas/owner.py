@@ -5,6 +5,7 @@ from app.schemas.venue import VenueDetailResponse
 
 
 class OwnerTransactionsResponse(BaseModel):
+    system_fee_per_transaction: float
     items: list[OwnerBookingReviewItemResponse] = Field(default_factory=list)
 
 
@@ -13,6 +14,9 @@ class OwnerDashboardStatsResponse(BaseModel):
     pending_count: int
     completed_count: int
     cancelled_count: int
+    system_fee_per_transaction: float
+    system_fee_billable_count: int
+    system_fee_owed: float
     venue_count: int
     court_count: int
 

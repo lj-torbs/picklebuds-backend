@@ -9,6 +9,8 @@ from app.schemas.admin import (
     AdminOwnerPaymentStatusUpdateRequest,
     AdminOwnerStatusUpdateRequest,
     AdminOwnerStatusActionResponse,
+    AdminOwnerSystemFeeUpdateRequest,
+    AdminOwnerSystemFeeUpdateResponse,
 )
 from app.schemas.common import CurrentUser
 from app.services.admin_service import (
@@ -18,6 +20,7 @@ from app.services.admin_service import (
     lock_owner_access,
     set_owner_access_status,
     set_owner_system_payment_status,
+    update_owner_system_fee,
     unlock_owner_access,
 )
 
@@ -72,6 +75,23 @@ def update_owner_payment_status(
 ) -> AdminOwnerStatusActionResponse:
     try:
         return set_owner_system_payment_status(db, owner_public_id, payload.status)
+    except AdminOwnerFailure as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/owners/{owner_public_id}/system-fee", response_model=AdminOwnerSystemFeeUpdateResponse)
+def update_owner_fee(
+    owner_public_id: str,
+    payload: AdminOwnerSystemFeeUpdateRequest,
+    current_user: CurrentUser = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+) -> AdminOwnerSystemFeeUpdateResponse:
+    try:
+        return update_owner_system_fee(
+            db,
+            owner_public_id,
+            payload.fee_per_transaction,
+        )
     except AdminOwnerFailure as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 

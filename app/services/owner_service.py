@@ -27,6 +27,7 @@ from app.schemas.owner import (
     OwnerVenueListResponse,
 )
 from app.services.booking_service import list_owner_booking_reviews
+from app.services.system_fee_service import get_owner_system_fee
 from app.services.venue_service import get_venue_detail
 from app.schemas.venue import VenueDetailResponse
 
@@ -40,7 +41,10 @@ class OwnerManageFailure(Exception):
 
 def list_owner_transactions(db: Session, current_user: CurrentUser) -> OwnerTransactionsResponse:
     reviews = list_owner_booking_reviews(db, current_user)
-    return OwnerTransactionsResponse(items=reviews.items)
+    return OwnerTransactionsResponse(
+        system_fee_per_transaction=get_owner_system_fee(db, current_user.id),
+        items=reviews.items,
+    )
 
 
 def get_owner_dashboard(db: Session, current_user: CurrentUser) -> OwnerDashboardResponse:
@@ -69,10 +73,14 @@ def get_owner_dashboard(db: Session, current_user: CurrentUser) -> OwnerDashboar
     pending_count = 0
     completed_count = 0
     cancelled_count = 0
+    system_fee_billable_count = 0
+    system_fee_per_transaction = get_owner_system_fee(db, current_user.id)
 
     for payment_status, status, amount in booking_rows:
-        if payment_status == "paid":
+        if payment_status == "paid" and status != "cancelled":
             total_revenue += float(amount or 0)
+        if payment_status == "paid" and status != "cancelled":
+            system_fee_billable_count += 1
         if status == "pending":
             pending_count += 1
         elif status == "completed":
@@ -88,6 +96,12 @@ def get_owner_dashboard(db: Session, current_user: CurrentUser) -> OwnerDashboar
             pending_count=pending_count,
             completed_count=completed_count,
             cancelled_count=cancelled_count,
+            system_fee_per_transaction=system_fee_per_transaction,
+            system_fee_billable_count=system_fee_billable_count,
+            system_fee_owed=round(
+                system_fee_billable_count * system_fee_per_transaction,
+                2,
+            ),
             venue_count=venue_count,
             court_count=int(court_count),
         ),
